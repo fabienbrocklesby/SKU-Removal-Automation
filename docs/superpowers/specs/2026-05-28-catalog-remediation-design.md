@@ -117,10 +117,11 @@ The plan export must capture the inventory item ID and the available quantity
 seen before application. Live schema introspection for `2026-01` confirmed the
 quantity input supports `changeFromQuantity`. The mutation must use Shopify's
 absolute `inventorySetQuantities` operation, batching no more than 250
-inventory items per input row, with an idempotency key per row and
-`changeFromQuantity` for each item. A compare mismatch is recorded as an
-unapplied row instead of overwriting an inventory change made after the plan
-export.
+inventory items per request. For this remediation run, generate one inventory
+item per JSONL mutation row, with an idempotency key and
+`changeFromQuantity`. That isolates any compare mismatch to one variant rather
+than failing a multi-item row. A compare mismatch is recorded as an unapplied
+row instead of overwriting an inventory change made after the plan export.
 
 Inventory audit output records product, variant, inventory item, location,
 quantity before, intended quantity, mutation outcome, and any Shopify

@@ -117,10 +117,11 @@ Tests must assert:
 - products with unchanged titles create no title mutation row;
 - changed titles create `{ input: { id, title } }` JSONL values and an audit
   record containing before/after titles;
-- variants produce inventory set records at
+- variants produce isolated inventory set records at
   `gid://shopify/Location/90543390932` with `quantity: 10` and the exported
   current value as `changeFromQuantity`;
-- inventory records are split into batches of at most `250`;
+- each inventory JSONL row changes one item so a compare conflict cannot fail
+  unrelated variants;
 - mutation JSONL larger than `100 * 1024 * 1024` bytes is rejected.
 
 - [ ] **Step 2: Run the tests to confirm RED**
@@ -140,8 +141,8 @@ export function assertBulkInputSize(bytes) {}
 ```
 
 Each inventory JSONL row must include an idempotency key variable and an
-`input.quantities` array containing `inventoryItemId`, `locationId`,
-`quantity: 10`, and `changeFromQuantity`.
+`input.quantities` array containing one record with `inventoryItemId`,
+`locationId`, `quantity: 10`, and `changeFromQuantity`.
 
 - [ ] **Step 4: Run focused and full tests**
 
