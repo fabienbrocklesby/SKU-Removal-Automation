@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
@@ -9,7 +10,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
 
-import { chooseKeepProductIds, partitionProductsForDeletion } from "./lib/catalog-selection.mjs";
+import { chooseKeepProductIds } from "./lib/catalog-selection.mjs";
 import { loadEnvFile } from "./lib/dotenv-file.mjs";
 import { TerminalProgress } from "./lib/progress-ui.mjs";
 
@@ -580,6 +581,152 @@ function pushMapArray(map, key, value) {
   map.get(key).push(value);
 }
 
+async function chooseKeepIdsFromRawExport(rawPath, keepCount, seed, expectedProducts, ui) {
+  const products = [];
+  const rl = createInterface({
+    input: createReadStream(rawPath),
+    crlfDelay: Infinity
+  });
+
+  for await (const line of rl) {
+    if (!line.includes('"__typename":"Product"')) continue;
+    const product = JSON.parse(line);
+    products.push({ id: product.id });
+    if (products.length % 2500 === 0) {
+      ui.update({
+        stage: "Select keep set",
+        status: "RUNNING",
+        done: products.length,
+        total: expectedProducts,
+        unit: "products",
+        detail: "Scanning exported product IDs"
+      });
+    }
+  }
+
+  ui.update({
+    stage: "Select keep set",
+    status: "COMPLETED",
+    done: products.length,
+    total: products.length,
+    unit: "products",
+    detail: `Selecting ${Math.min(keepCount, products.length).toLocaleString("en-US")} products to keep`
+  });
+
+  return {
+    productCount: products.length,
+    keepIds: chooseKeepProductIds(products, keepCount, seed)
+  };
+}
+
+async function writeStreamingBackups(rawPath, paths, keepIds, deleteLimit, expectedProducts, deletedAt, ui) {
+  const streams = {
+    fullJsonl: createWriteStream(paths.fullJsonl),
+    shopifyCsv: createWriteStream(paths.shopifyCsv),
+    deletedSkusCsv: createWriteStream(paths.deletedSkusCsv),
+    deletedProductsCsv: createWriteStream(paths.deletedProductsCsv),
+    keptProductsCsv: createWriteStream(paths.keptProductsCsv),
+    deleteInput: createWriteStream(paths.deleteInput)
+  };
+  const deletedProductHeaders = ["product_id", "product_handle", "product_title", "status_before_delete", "variant_count", "sku_count"];
+  const keptProductHeaders = ["product_id", "product_handle", "product_title", "variant_id", "sku", "status"];
+
+  await streamWrite(streams.shopifyCsv, `${SHOPIFY_CSV_HEADERS.join(",")}\n`);
+  await streamWrite(streams.deletedSkusCsv, `${DELETED_SKU_HEADERS.join(",")}\n`);
+  await streamWrite(streams.deletedProductsCsv, `${deletedProductHeaders.join(",")}\n`);
+  await streamWrite(streams.keptProductsCsv, `${keptProductHeaders.join(",")}\n`);
+
+  const counts = {
+    products_exported: 0,
+    products_kept: 0,
+    products_to_delete: 0,
+    variants_exported: 0,
+    deleted_sku_rows: 0
+  };
+  let product = null;
+  let deletedSelected = 0;
+
+  const flushProduct = async () => {
+    if (!product) return;
+    const originallyKept = keepIds.has(product.id);
+    const shouldDelete = !originallyKept && (deleteLimit === null || deletedSelected < deleteLimit);
+
+    counts.products_exported += 1;
+    counts.variants_exported += product.variants.length;
+    await streamWrite(streams.fullJsonl, `${JSON.stringify(product)}\n`);
+    await writeCsvRowsToStream(streams.shopifyCsv, SHOPIFY_CSV_HEADERS, shopifyRows([product]));
+
+    if (shouldDelete) {
+      deletedSelected += 1;
+      counts.products_to_delete += 1;
+      const skuRows = deletedSkuRows([product], deletedAt);
+      counts.deleted_sku_rows += skuRows.length;
+      await writeCsvRowsToStream(streams.deletedSkusCsv, DELETED_SKU_HEADERS, skuRows);
+      await writeCsvRowsToStream(streams.deletedProductsCsv, deletedProductHeaders, deletedProductRows([product]));
+      await streamWrite(streams.deleteInput, `${JSON.stringify({ input: { id: product.id } })}\n`);
+    } else {
+      counts.products_kept += 1;
+      await writeCsvRowsToStream(streams.keptProductsCsv, keptProductHeaders, keptProductRows([product]));
+    }
+
+    if (counts.products_exported % 1000 === 0) {
+      ui.update({
+        stage: "Write backup files",
+        status: "RUNNING",
+        done: counts.products_exported,
+        total: expectedProducts,
+        unit: "products",
+        detail: `keep=${counts.products_kept.toLocaleString("en-US")} delete=${counts.products_to_delete.toLocaleString("en-US")}`
+      });
+    }
+  };
+
+  const rl = createInterface({
+    input: createReadStream(rawPath),
+    crlfDelay: Infinity
+  });
+  for await (const line of rl) {
+    if (!line.trim()) continue;
+    const item = JSON.parse(line);
+    const parentId = item.__parentId;
+    delete item.__parentId;
+    if (item.__typename === "Product") {
+      await flushProduct();
+      product = { ...item, variants: [], media: [], metafields: [] };
+    } else if (product && parentId === product.id && item.__typename === "ProductVariant") {
+      product.variants.push(item);
+    } else if (product && parentId === product.id && item.__typename === "Metafield") {
+      product.metafields.push(item);
+    } else if (product && parentId === product.id && item.__typename) {
+      product.media.push(item);
+    } else {
+      throw new Error(`Raw export is not grouped by product at parent ${parentId || "unknown"}; refusing low-memory backup write`);
+    }
+  }
+  await flushProduct();
+
+  await Promise.all(Object.values(streams).map(closeStream));
+  ui.update({
+    stage: "Write backup files",
+    status: "COMPLETED",
+    done: counts.products_exported,
+    total: counts.products_exported,
+    unit: "products",
+    detail: `keep=${counts.products_kept.toLocaleString("en-US")} delete=${counts.products_to_delete.toLocaleString("en-US")}`
+  });
+  return counts;
+}
+
+async function writeCsvRowsToStream(stream, headers, rows) {
+  for (const row of rows) {
+    await streamWrite(stream, `${headers.map((header) => csvCell(row[header] ?? "")).join(",")}\n`);
+  }
+}
+
+async function streamWrite(stream, content) {
+  if (!stream.write(content)) await once(stream, "drain");
+}
+
 async function writeStructuredBackup(products, path) {
   const stream = createWriteStream(path);
   for (const product of products) {
@@ -979,82 +1126,55 @@ async function main() {
   }
 
   ui.update({
-    stage: "Parse export",
+    stage: "Select keep set",
     status: "RUNNING",
     done: 0,
-    total: null,
+    total: args.sampleProducts || args.expectedProducts,
     unit: "products",
-    detail: "Building product, variant, media and metafield records"
+    detail: "Scanning exported product IDs in low-memory mode"
   });
-  const products = await parseBulkProducts(paths.rawJsonl);
-  ui.update({
-    stage: "Parse export",
-    status: "COMPLETED",
-    done: products.length,
-    total: products.length,
-    unit: "products",
-    detail: "Product graph reconstructed"
-  });
-  const keepIds = chooseKeepProductIds(products, args.keep, args.seed);
-  const { keptProducts, deletedProducts } = partitionProductsForDeletion(products, keepIds, args.deleteLimit);
+  const selection = await chooseKeepIdsFromRawExport(
+    paths.rawJsonl,
+    args.keep,
+    args.seed,
+    args.sampleProducts || args.expectedProducts,
+    ui
+  );
   const deletedAt = new Date().toISOString();
-
-  const backupSteps = [
-    "structured JSONL",
-    "compressed JSONL",
-    "Shopify CSV",
-    "deleted SKUs CSV",
-    "deleted products CSV",
-    "kept products CSV",
-    "delete input JSONL"
-  ];
-  let backupDone = 0;
-  const updateBackup = (detail) => ui.update({
+  ui.update({
     stage: "Write backup files",
     status: "RUNNING",
-    done: backupDone,
-    total: backupSteps.length,
-    unit: "files",
-    detail
+    done: 0,
+    total: selection.productCount,
+    unit: "products",
+    detail: "Streaming product groups to JSONL and CSV outputs"
   });
-
-  updateBackup(backupSteps[0]);
-  await writeStructuredBackup(products, paths.fullJsonl);
-  backupDone += 1;
-  updateBackup(backupSteps[1]);
-  await gzipFile(paths.fullJsonl, paths.fullJsonlGz);
-  backupDone += 1;
-  updateBackup(backupSteps[2]);
-  await writeCsv(paths.shopifyCsv, SHOPIFY_CSV_HEADERS, shopifyRows(products));
-  backupDone += 1;
-  updateBackup(backupSteps[3]);
-  await writeCsv(paths.deletedSkusCsv, DELETED_SKU_HEADERS, deletedSkuRows(deletedProducts, deletedAt));
-  backupDone += 1;
-  updateBackup(backupSteps[4]);
-  await writeCsv(paths.deletedProductsCsv, ["product_id", "product_handle", "product_title", "status_before_delete", "variant_count", "sku_count"], deletedProductRows(deletedProducts));
-  backupDone += 1;
-  updateBackup(backupSteps[5]);
-  await writeCsv(paths.keptProductsCsv, ["product_id", "product_handle", "product_title", "variant_id", "sku", "status"], keptProductRows(keptProducts));
-  backupDone += 1;
-  updateBackup(backupSteps[6]);
-  await writeDeleteInput(paths.deleteInput, deletedProducts);
-  backupDone += 1;
+  manifest.counts = await writeStreamingBackups(
+    paths.rawJsonl,
+    paths,
+    selection.keepIds,
+    args.deleteLimit,
+    selection.productCount,
+    deletedAt,
+    ui
+  );
   ui.update({
-    stage: "Write backup files",
-    status: "COMPLETED",
-    done: backupDone,
-    total: backupSteps.length,
+    stage: "Compress structured backup",
+    status: "RUNNING",
+    done: 0,
+    total: 1,
     unit: "files",
-    detail: "Backup and audit files written"
+    detail: basename(paths.fullJsonlGz)
   });
-
-  manifest.counts = {
-    products_exported: products.length,
-    products_kept: keptProducts.length,
-    products_to_delete: deletedProducts.length,
-    variants_exported: products.reduce((sum, product) => sum + product.variants.length, 0),
-    deleted_sku_rows: deletedProducts.reduce((sum, product) => sum + Math.max(product.variants.length, 1), 0)
-  };
+  await gzipFile(paths.fullJsonl, paths.fullJsonlGz);
+  ui.update({
+    stage: "Compress structured backup",
+    status: "COMPLETED",
+    done: 1,
+    total: 1,
+    unit: "files",
+    detail: basename(paths.fullJsonlGz)
+  });
 
   for (const [key, path] of Object.entries(paths)) {
     if (key === "deleteResults") continue;
@@ -1071,7 +1191,7 @@ async function main() {
     return;
   }
 
-  if (deletedProducts.length === 0) {
+  if (manifest.counts.products_to_delete === 0) {
     ui.complete("[delete] nothing to delete");
     return;
   }
@@ -1103,7 +1223,7 @@ async function main() {
 
   const completedDelete = await pollBulkOperation(config, deleteOperation.id, args.pollSeconds, ui, {
     stage: "Shopify hard delete",
-    total: deletedProducts.length,
+    total: manifest.counts.products_to_delete,
     unit: "products"
   });
   manifest.operations.delete = completedDelete;

@@ -52,6 +52,12 @@ Delete the full non-kept set after the test:
 RUN_DIR=catalog-runs/2026-05-27-overnight bin/catalog delete-all
 ```
 
+Resume from an already-downloaded raw export after a processing interruption:
+
+```bash
+RUN_DIR=catalog-runs/2026-05-27-overnight KEEP=10000 bin/catalog resume-delete
+```
+
 ## Output Files
 
 Each run writes a timestamped or named directory under `catalog-runs/`.

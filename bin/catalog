@@ -22,6 +22,7 @@ Usage:
   bin/catalog bulk-cancel
   bin/catalog dry-run-small [RUN_DIR]
   bin/catalog backup-full [RUN_DIR]
+  bin/catalog resume-delete [RUN_DIR]
   bin/catalog delete-test [RUN_DIR]
   bin/catalog delete-all [RUN_DIR]
   bin/catalog shell
@@ -112,6 +113,17 @@ case "$cmd" in
       --keep "$KEEP" \
       --seed "$SEED" \
       --skip-export \
+      --poll-seconds "$POLL_SECONDS" \
+      --confirm-delete "$CONFIRM"
+    ;;
+  resume-delete)
+    out="${1:-$RUN_DIR}"
+    run_node scripts/catalog-cleanup.mjs run \
+      --run-dir "/app/${out}" \
+      --keep "$KEEP" \
+      --seed "$SEED" \
+      --skip-export \
+      --expected-products "$EXPECTED_PRODUCTS" \
       --poll-seconds "$POLL_SECONDS" \
       --confirm-delete "$CONFIRM"
     ;;
