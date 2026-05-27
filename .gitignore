@@ -1,0 +1,7 @@
+.env
+.env.*
+!.env.example
+catalog-runs/
+node_modules/
+npm-debug.log*
+.DS_Store

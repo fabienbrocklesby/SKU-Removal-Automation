@@ -1,0 +1,126 @@
+#!/usr/bin/env sh
+set -eu
+
+IMAGE="exclusive-motors-au-catalog-cleanup:local"
+RUN_DIR="${RUN_DIR:-catalog-runs/overnight}"
+KEEP="${KEEP:-10000}"
+SEED="${SEED:-exclusive-motors-au-2026-05-27}"
+POLL_SECONDS="${POLL_SECONDS:-20}"
+CONFIRM="DELETE_EXCLUSIVE_MOTORS_AU_PRODUCTS"
+
+usage() {
+  cat <<EOF
+Usage:
+  bin/catalog build
+  bin/catalog test
+  bin/catalog oauth-url
+  bin/catalog oauth
+  bin/catalog oauth-exchange CODE
+  bin/catalog verify
+  bin/catalog bulk-status
+  bin/catalog bulk-cancel
+  bin/catalog dry-run-small [RUN_DIR]
+  bin/catalog backup-full [RUN_DIR]
+  bin/catalog delete-test [RUN_DIR]
+  bin/catalog delete-all [RUN_DIR]
+  bin/catalog shell
+
+Environment overrides:
+  RUN_DIR=${RUN_DIR}
+  KEEP=${KEEP}
+  SEED=${SEED}
+  POLL_SECONDS=${POLL_SECONDS}
+EOF
+}
+
+compose() {
+  docker compose "$@"
+}
+
+run_node() {
+  compose run --rm catalog "$@"
+}
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+  build)
+    compose build
+    ;;
+  test)
+    compose run --rm --entrypoint npm catalog test
+    ;;
+  oauth-url)
+    node scripts/oauth-token.mjs url
+    ;;
+  oauth)
+    node scripts/oauth-token.mjs listen
+    ;;
+  oauth-exchange)
+    code="${1:-}"
+    if [ -z "$code" ]; then
+      echo "Usage: bin/catalog oauth-exchange CODE" >&2
+      exit 2
+    fi
+    node scripts/oauth-token.mjs exchange --code "$code"
+    ;;
+  verify)
+    run_node scripts/verify-access.mjs
+    ;;
+  bulk-status)
+    run_node scripts/bulk-status.mjs status
+    ;;
+  bulk-cancel)
+    run_node scripts/bulk-status.mjs cancel
+    ;;
+  dry-run-small)
+    out="${1:-catalog-runs/smoke-dry-run}"
+    run_node scripts/catalog-cleanup.mjs run \
+      --run-dir "/app/${out}" \
+      --keep "$KEEP" \
+      --seed "$SEED" \
+      --sample-products 5 \
+      --poll-seconds "$POLL_SECONDS"
+    ;;
+  backup|backup-full)
+    out="${1:-$RUN_DIR}"
+    run_node scripts/catalog-cleanup.mjs run \
+      --run-dir "/app/${out}" \
+      --keep "$KEEP" \
+      --seed "$SEED" \
+      --poll-seconds "$POLL_SECONDS"
+    ;;
+  delete-test)
+    out="${1:-catalog-runs/delete-test-40}"
+    run_node scripts/catalog-cleanup.mjs run \
+      --run-dir "/app/${out}" \
+      --keep 1 \
+      --seed "$SEED" \
+      --sample-products 41 \
+      --delete-limit 40 \
+      --poll-seconds "$POLL_SECONDS" \
+      --confirm-delete "$CONFIRM"
+    ;;
+  delete-all)
+    out="${1:-$RUN_DIR}"
+    run_node scripts/catalog-cleanup.mjs run \
+      --run-dir "/app/${out}" \
+      --keep "$KEEP" \
+      --seed "$SEED" \
+      --skip-export \
+      --poll-seconds "$POLL_SECONDS" \
+      --confirm-delete "$CONFIRM"
+    ;;
+  shell)
+    compose run --rm --entrypoint sh catalog
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    echo "Unknown command: $cmd" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

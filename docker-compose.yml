@@ -1,0 +1,9 @@
+services:
+  catalog:
+    build: .
+    image: exclusive-motors-au-catalog-cleanup:local
+    env_file:
+      - .env
+    volumes:
+      - ./catalog-runs:/app/catalog-runs
+    working_dir: /app

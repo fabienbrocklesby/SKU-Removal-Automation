@@ -1,0 +1,22 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "3b2b515c10b18d9a574010a94089bc1e"
+application_url = "https://shopify.dev/apps/default-app-home"
+embedded = true
+name = "EM AU Catalog"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "read_inventory,write_inventory,read_locations,read_products,write_products,read_publications,write_publications"
+
+[webhooks]
+api_version = "2026-07"
+
+[auth]
+redirect_urls = [
+  "https://shopify.dev/apps/default-app-home/api/auth",
+  "http://localhost:8765/callback"
+]
+
+[build]
+automatically_update_urls_on_dev = true

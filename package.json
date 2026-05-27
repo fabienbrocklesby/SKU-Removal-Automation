@@ -1,0 +1,18 @@
+{
+  "name": "exclusive-motors-au-catalog-cleanup",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "catalog:run": "node scripts/catalog-cleanup.mjs run",
+    "catalog:help": "node scripts/catalog-cleanup.mjs --help",
+    "oauth": "node scripts/oauth-token.mjs",
+    "verify": "node scripts/verify-access.mjs",
+    "bulk:status": "node scripts/bulk-status.mjs status",
+    "bulk:cancel": "node scripts/bulk-status.mjs cancel",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
