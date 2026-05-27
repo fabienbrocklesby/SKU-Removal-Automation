@@ -6,6 +6,7 @@ RUN_DIR="${RUN_DIR:-catalog-runs/overnight}"
 KEEP="${KEEP:-10000}"
 SEED="${SEED:-exclusive-motors-au-2026-05-27}"
 POLL_SECONDS="${POLL_SECONDS:-20}"
+EXPECTED_PRODUCTS="${EXPECTED_PRODUCTS:-326820}"
 CONFIRM="DELETE_EXCLUSIVE_MOTORS_AU_PRODUCTS"
 
 usage() {
@@ -30,6 +31,7 @@ Environment overrides:
   KEEP=${KEEP}
   SEED=${SEED}
   POLL_SECONDS=${POLL_SECONDS}
+  EXPECTED_PRODUCTS=${EXPECTED_PRODUCTS}
 EOF
 }
 
@@ -89,7 +91,8 @@ case "$cmd" in
       --run-dir "/app/${out}" \
       --keep "$KEEP" \
       --seed "$SEED" \
-      --poll-seconds "$POLL_SECONDS"
+      --poll-seconds "$POLL_SECONDS" \
+      --expected-products "$EXPECTED_PRODUCTS"
     ;;
   delete-test)
     out="${1:-catalog-runs/delete-test-40}"

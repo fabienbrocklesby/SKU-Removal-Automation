@@ -8,6 +8,7 @@ The runner is deliberately guarded:
 - It exports and hashes backup/audit files before deletion.
 - It only deletes when `DELETE_EXCLUSIVE_MOTORS_AU_PRODUCTS` is supplied by the wrapper.
 - It supports `--delete-limit 40` for a small live deletion test.
+- It shows a terminal progress dashboard for bulk export, backup file writing, and deletion.
 
 ## Quick Commands
 
@@ -42,7 +43,7 @@ bin/catalog delete-test
 Full backup-only run:
 
 ```bash
-RUN_DIR=catalog-runs/2026-05-27-overnight KEEP=10000 bin/catalog backup-full
+RUN_DIR=catalog-runs/2026-05-27-overnight KEEP=10000 EXPECTED_PRODUCTS=326820 bin/catalog backup-full
 ```
 
 Delete the full non-kept set after the test:
@@ -74,8 +75,10 @@ bin/catalog verify
 bin/catalog bulk-status
 bin/catalog dry-run-small
 bin/catalog delete-test
-RUN_DIR=catalog-runs/overnight KEEP=10000 bin/catalog backup-full
+RUN_DIR=catalog-runs/overnight KEEP=10000 EXPECTED_PRODUCTS=326820 bin/catalog backup-full
 RUN_DIR=catalog-runs/overnight KEEP=10000 bin/catalog delete-all
 ```
 
 The wrapper mounts `./catalog-runs` into the container, so backup files remain on the VPS filesystem.
+
+Set `NO_TUI=1` if you need plain log lines instead of the progress dashboard.

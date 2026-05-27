@@ -11,10 +11,12 @@ import { createGzip } from "node:zlib";
 
 import { chooseKeepProductIds, partitionProductsForDeletion } from "./lib/catalog-selection.mjs";
 import { loadEnvFile } from "./lib/dotenv-file.mjs";
+import { TerminalProgress } from "./lib/progress-ui.mjs";
 
 const REQUIRED_STORE = "hpas5s-eu.myshopify.com";
 const DEFAULT_API_VERSION = "2026-01";
 const DELETE_CONFIRMATION = "DELETE_EXCLUSIVE_MOTORS_AU_PRODUCTS";
+let activeUi = null;
 
 const SHOPIFY_CSV_HEADERS = [
   "Handle",
@@ -206,6 +208,8 @@ function parseArgs(argv) {
     skipExport: false,
     deleteLimit: null,
     sampleProducts: null,
+    expectedProducts: null,
+    noUi: false,
     confirmDelete: "",
     directDeleteFallback: false
   };
@@ -225,6 +229,8 @@ function parseArgs(argv) {
     else if (key === "--poll-seconds") args.pollSeconds = Number(next), i += 1;
     else if (key === "--delete-limit") args.deleteLimit = Number(next), i += 1;
     else if (key === "--sample-products") args.sampleProducts = Number(next), i += 1;
+    else if (key === "--expected-products") args.expectedProducts = Number(next), i += 1;
+    else if (key === "--no-ui") args.noUi = true;
     else if (key === "--skip-export") args.skipExport = true;
     else if (key === "--direct-delete-fallback") args.directDeleteFallback = true;
     else if (key === "--confirm-delete") args.confirmDelete = String(next), i += 1;
@@ -239,6 +245,9 @@ function parseArgs(argv) {
   }
   if (args.sampleProducts !== null && (!Number.isInteger(args.sampleProducts) || args.sampleProducts < 1 || args.sampleProducts > 250)) {
     throw new Error("--sample-products must be an integer between 1 and 250");
+  }
+  if (args.expectedProducts !== null && (!Number.isInteger(args.expectedProducts) || args.expectedProducts < 1)) {
+    throw new Error("--expected-products must be a positive integer");
   }
 
   if (!args.runDir) {
@@ -261,6 +270,8 @@ Options:
   --skip-export             Reuse existing raw export in --run-dir
   --delete-limit <number>   Cap products deleted in this run; useful for a live test
   --sample-products <n>     Export only the first n products for a fast smoke test
+  --expected-products <n>   Expected product count for backup progress ETA
+  --no-ui                   Disable the terminal progress dashboard
   --confirm-delete <text>   Must equal ${DELETE_CONFIRMATION} to delete
   --poll-seconds <number>   Bulk operation polling interval (default: 20)
 
@@ -469,7 +480,7 @@ async function exportSampleProducts(config, path, count) {
   await closeStream(stream);
 }
 
-async function pollBulkOperation(config, id, pollSeconds) {
+async function pollBulkOperation(config, id, pollSeconds, ui, progress = {}) {
   const query = `
     query BulkOperationStatus($id: ID!) {
       node(id: $id) {
@@ -494,10 +505,22 @@ async function pollBulkOperation(config, id, pollSeconds) {
     const json = await shopifyGraphql(config, query, { id });
     const operation = json.data.node;
     if (!operation) throw new Error(`Bulk operation ${id} was not found`);
-    console.log(`[bulk] ${operation.type} ${operation.status} root=${operation.rootObjectCount} objects=${operation.objectCount}`);
+    const done = Number(operation.rootObjectCount || 0);
+    ui.update({
+      stage: progress.stage || `Shopify bulk ${operation.type.toLowerCase()}`,
+      status: operation.status,
+      done,
+      total: progress.total ?? null,
+      unit: progress.unit || "products",
+      detail: `objects=${operation.objectCount} file=${operation.fileSize || 0} bytes`
+    });
 
-    if (operation.status === "COMPLETED") return operation;
+    if (operation.status === "COMPLETED") {
+      ui.log(`[bulk] ${operation.type} ${operation.status} root=${operation.rootObjectCount} objects=${operation.objectCount}`);
+      return operation;
+    }
     if (["FAILED", "CANCELED", "EXPIRED"].includes(operation.status)) {
+      ui.close();
       throw new Error(`Bulk operation ${operation.status}: ${JSON.stringify(operation)}`);
     }
     await sleep(pollSeconds * 1000);
@@ -851,6 +874,11 @@ async function main() {
   if (args.command !== "run") throw new Error(`Unsupported command: ${args.command}`);
 
   const config = getConfig();
+  const ui = new TerminalProgress({
+    title: "Exclusive Motors AU Catalog Cleanup",
+    enabled: !args.noUi
+  });
+  activeUi = ui;
   await mkdir(args.runDir, { recursive: true });
 
   const paths = {
@@ -873,6 +901,7 @@ async function main() {
     keep_requested: args.keep,
     delete_limit: args.deleteLimit,
     sample_products: args.sampleProducts,
+    expected_products: args.expectedProducts,
     seed: args.seed,
     run_dir: args.runDir,
     destructive_confirmed: args.confirmDelete === DELETE_CONFIRMATION,
@@ -883,43 +912,141 @@ async function main() {
 
   const before = await getShopSnapshot(config);
   manifest.shop_snapshot_before = before;
-  console.log(`[shop] ${before.shop.name} ${before.shop.myshopifyDomain} products=${before.productsCount.count}`);
+  ui.log(`[shop] ${before.shop.name} ${before.shop.myshopifyDomain} products=${before.productsCount.count} (${before.productsCount.precision})`);
 
   if (!args.skipExport) {
     if (args.sampleProducts) {
-      console.log(`[export] writing direct sample export for ${args.sampleProducts} products`);
+      ui.update({
+        stage: "Sample export",
+        status: "RUNNING",
+        done: 0,
+        total: args.sampleProducts,
+        unit: "products",
+        detail: "Reading a small product sample directly"
+      });
       manifest.operations.export = { type: "SAMPLE", requested_products: args.sampleProducts };
       await exportSampleProducts(config, paths.rawJsonl, args.sampleProducts);
+      ui.update({
+        stage: "Sample export",
+        status: "COMPLETED",
+        done: args.sampleProducts,
+        total: args.sampleProducts,
+        unit: "products",
+        detail: "Sample JSONL written"
+      });
     } else {
-      console.log("[export] starting product bulk query");
+      ui.log("[export] starting product bulk query");
       const exportOperation = await startBulkQuery(config);
       manifest.operations.export = exportOperation;
       await writeManifest(args.runDir, manifest);
 
-      const completedExport = await pollBulkOperation(config, exportOperation.id, args.pollSeconds);
+      const completedExport = await pollBulkOperation(config, exportOperation.id, args.pollSeconds, ui, {
+        stage: "Shopify bulk export",
+        total: args.expectedProducts,
+        unit: "products"
+      });
       manifest.operations.export = completedExport;
       if (!completedExport.url) throw new Error("Completed export did not include a download URL");
-      console.log("[export] downloading raw JSONL");
+      ui.update({
+        stage: "Download export",
+        status: "RUNNING",
+        done: 0,
+        total: Number(completedExport.fileSize || 0) || null,
+        unit: "bytes",
+        detail: "Downloading Shopify JSONL export"
+      });
       await downloadToFile(completedExport.url, paths.rawJsonl);
     }
+    ui.update({
+      stage: "Compress raw export",
+      status: "RUNNING",
+      done: 0,
+      total: 1,
+      unit: "files",
+      detail: basename(paths.rawJsonlGz)
+    });
     await gzipFile(paths.rawJsonl, paths.rawJsonlGz);
+    ui.update({
+      stage: "Compress raw export",
+      status: "COMPLETED",
+      done: 1,
+      total: 1,
+      unit: "files",
+      detail: basename(paths.rawJsonlGz)
+    });
   } else {
-    console.log("[export] skipping bulk export; reusing existing raw JSONL");
+    ui.log("[export] skipping bulk export; reusing existing raw JSONL");
   }
 
-  console.log("[backup] parsing products and writing backup files");
+  ui.update({
+    stage: "Parse export",
+    status: "RUNNING",
+    done: 0,
+    total: null,
+    unit: "products",
+    detail: "Building product, variant, media and metafield records"
+  });
   const products = await parseBulkProducts(paths.rawJsonl);
+  ui.update({
+    stage: "Parse export",
+    status: "COMPLETED",
+    done: products.length,
+    total: products.length,
+    unit: "products",
+    detail: "Product graph reconstructed"
+  });
   const keepIds = chooseKeepProductIds(products, args.keep, args.seed);
   const { keptProducts, deletedProducts } = partitionProductsForDeletion(products, keepIds, args.deleteLimit);
   const deletedAt = new Date().toISOString();
 
+  const backupSteps = [
+    "structured JSONL",
+    "compressed JSONL",
+    "Shopify CSV",
+    "deleted SKUs CSV",
+    "deleted products CSV",
+    "kept products CSV",
+    "delete input JSONL"
+  ];
+  let backupDone = 0;
+  const updateBackup = (detail) => ui.update({
+    stage: "Write backup files",
+    status: "RUNNING",
+    done: backupDone,
+    total: backupSteps.length,
+    unit: "files",
+    detail
+  });
+
+  updateBackup(backupSteps[0]);
   await writeStructuredBackup(products, paths.fullJsonl);
+  backupDone += 1;
+  updateBackup(backupSteps[1]);
   await gzipFile(paths.fullJsonl, paths.fullJsonlGz);
+  backupDone += 1;
+  updateBackup(backupSteps[2]);
   await writeCsv(paths.shopifyCsv, SHOPIFY_CSV_HEADERS, shopifyRows(products));
+  backupDone += 1;
+  updateBackup(backupSteps[3]);
   await writeCsv(paths.deletedSkusCsv, DELETED_SKU_HEADERS, deletedSkuRows(deletedProducts, deletedAt));
+  backupDone += 1;
+  updateBackup(backupSteps[4]);
   await writeCsv(paths.deletedProductsCsv, ["product_id", "product_handle", "product_title", "status_before_delete", "variant_count", "sku_count"], deletedProductRows(deletedProducts));
+  backupDone += 1;
+  updateBackup(backupSteps[5]);
   await writeCsv(paths.keptProductsCsv, ["product_id", "product_handle", "product_title", "variant_id", "sku", "status"], keptProductRows(keptProducts));
+  backupDone += 1;
+  updateBackup(backupSteps[6]);
   await writeDeleteInput(paths.deleteInput, deletedProducts);
+  backupDone += 1;
+  ui.update({
+    stage: "Write backup files",
+    status: "COMPLETED",
+    done: backupDone,
+    total: backupSteps.length,
+    unit: "files",
+    detail: "Backup and audit files written"
+  });
 
   manifest.counts = {
     products_exported: products.length,
@@ -936,32 +1063,59 @@ async function main() {
   manifest.pre_delete_validated_at = new Date().toISOString();
   await writeManifest(args.runDir, manifest);
 
-  console.log(`[backup] products=${manifest.counts.products_exported} kept=${manifest.counts.products_kept} delete=${manifest.counts.products_to_delete}`);
-  console.log(`[backup] manifest written to ${join(args.runDir, "manifest.json")}`);
+  ui.log(`[backup] products=${manifest.counts.products_exported} kept=${manifest.counts.products_kept} delete=${manifest.counts.products_to_delete}`);
+  ui.log(`[backup] manifest written to ${join(args.runDir, "manifest.json")}`);
 
   if (args.confirmDelete !== DELETE_CONFIRMATION) {
-    console.log(`[stop] deletion not run. Pass --confirm-delete ${DELETE_CONFIRMATION} after reviewing backups.`);
+    ui.complete(`[stop] deletion not run. Pass --confirm-delete ${DELETE_CONFIRMATION} after reviewing backups.`);
     return;
   }
 
   if (deletedProducts.length === 0) {
-    console.log("[delete] nothing to delete");
+    ui.complete("[delete] nothing to delete");
     return;
   }
 
-  console.log("[delete] uploading delete input JSONL");
+  ui.update({
+    stage: "Upload delete input",
+    status: "RUNNING",
+    done: 0,
+    total: 1,
+    unit: "files",
+    detail: basename(paths.deleteInput)
+  });
   const stagedUploadPath = await stagedUpload(config, paths.deleteInput);
+  ui.update({
+    stage: "Upload delete input",
+    status: "COMPLETED",
+    done: 1,
+    total: 1,
+    unit: "files",
+    detail: "Staged upload ready"
+  });
   manifest.operations.delete_staged_upload_path = stagedUploadPath;
   await writeManifest(args.runDir, manifest);
 
-  console.log("[delete] starting Shopify bulk productDelete mutation");
+  ui.log("[delete] starting Shopify bulk productDelete mutation");
   const deleteOperation = await startBulkDelete(config, stagedUploadPath);
   manifest.operations.delete = deleteOperation;
   await writeManifest(args.runDir, manifest);
 
-  const completedDelete = await pollBulkOperation(config, deleteOperation.id, args.pollSeconds);
+  const completedDelete = await pollBulkOperation(config, deleteOperation.id, args.pollSeconds, ui, {
+    stage: "Shopify hard delete",
+    total: deletedProducts.length,
+    unit: "products"
+  });
   manifest.operations.delete = completedDelete;
   if (completedDelete.url) {
+    ui.update({
+      stage: "Download delete results",
+      status: "RUNNING",
+      done: 0,
+      total: Number(completedDelete.fileSize || 0) || null,
+      unit: "bytes",
+      detail: basename(paths.deleteResults)
+    });
     await downloadToFile(completedDelete.url, paths.deleteResults);
     manifest.files[basename(paths.deleteResults)] = await fileInfo(paths.deleteResults);
   }
@@ -970,10 +1124,11 @@ async function main() {
   manifest.shop_snapshot_after = after;
   manifest.completed_at = new Date().toISOString();
   await writeManifest(args.runDir, manifest);
-  console.log(`[done] Shopify now reports products=${after.productsCount.count}`);
+  ui.complete(`[done] Shopify now reports products=${after.productsCount.count} (${after.productsCount.precision})`);
 }
 
 main().catch((error) => {
+  activeUi?.close();
   console.error(`[error] ${error.message}`);
   process.exitCode = 1;
 });
