@@ -3,6 +3,7 @@ FROM node:24-alpine
 WORKDIR /app
 
 COPY package.json ./
+COPY bin ./bin
 COPY scripts ./scripts
 COPY tests ./tests
 COPY README.md ./
