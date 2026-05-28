@@ -463,12 +463,10 @@ async function summarizeResultErrors(path, mutationName) {
   return errors;
 }
 
-async function verifyProducts(config, products, locationId, targetQuantity) {
+async function verifyProducts(config, products, inventoryChanges, locationId, targetQuantity) {
   const expectedTitles = new Map(buildTitleChanges(products).map((change) => [change.productId, change.afterTitle]));
   const expectedInventory = new Map();
-  for (const product of products) {
-    for (const variant of product.variants || []) expectedInventory.set(variant.id, { productId: product.id, quantity: targetQuantity });
-  }
+  for (const change of inventoryChanges) expectedInventory.set(change.variantId, { productId: change.productId, quantity: targetQuantity });
 
   const ids = products.map((product) => product.id);
   const failures = { titles: [], inventory: [] };
@@ -562,6 +560,7 @@ async function main() {
     titleInput: join(args.runDir, "title-mutation-input.jsonl"),
     titleResults: join(args.runDir, "title-mutation-results.jsonl"),
     inventoryCsv: join(args.runDir, "inventory-changes.csv"),
+    inventorySkippedCsv: join(args.runDir, "inventory-skipped.csv"),
     inventoryInput: join(args.runDir, "inventory-mutation-input.jsonl"),
     inventoryResults: join(args.runDir, "inventory-mutation-results.jsonl")
   };
@@ -599,9 +598,6 @@ async function main() {
     targetQuantity: args.targetQuantity,
     runId: basename(args.runDir).replace(/[^a-zA-Z0-9_.-]/g, "-")
   });
-  if (inventoryPlan.skipped.length) {
-    throw new Error(`Refusing to apply while ${inventoryPlan.skipped.length} variants cannot be inventoried at ${locationId}`);
-  }
 
   await writeCsv(paths.titleCsv, ["product_id", "handle", "before_title", "after_title"], titleCsvRows(titleChanges));
   await writeJsonl(paths.titleInput, titleChanges.map((change) => change.variables));
@@ -609,6 +605,18 @@ async function main() {
     paths.inventoryCsv,
     ["product_id", "product_title", "variant_id", "sku", "inventory_item_id", "location_id", "before_quantity", "target_quantity", "status"],
     inventoryCsvRows(inventoryPlan.changes, "planned")
+  );
+  await writeCsv(
+    paths.inventorySkippedCsv,
+    ["product_id", "product_title", "variant_id", "sku", "inventory_item_id", "reason"],
+    inventoryPlan.skipped.map((row) => ({
+      product_id: row.productId,
+      product_title: row.productTitle,
+      variant_id: row.variantId,
+      sku: row.sku,
+      inventory_item_id: row.inventoryItemId,
+      reason: row.reason
+    }))
   );
   await writeJsonl(paths.inventoryInput, inventoryPlan.batches.map((batch) => batch.variables));
 
@@ -666,7 +674,7 @@ async function main() {
 
   manifest.errors.title = await summarizeResultErrors(paths.titleResults, "productUpdate");
   manifest.errors.inventory = await summarizeResultErrors(paths.inventoryResults, "inventorySetQuantities");
-  manifest.verification = await verifyProducts(config, selectedProducts, locationId, args.targetQuantity);
+  manifest.verification = await verifyProducts(config, selectedProducts, inventoryPlan.changes, locationId, args.targetQuantity);
   manifest.shop_snapshot_after = await getShopSnapshot(config);
   manifest.completed_at = new Date().toISOString();
   await writeManifest(args.runDir, manifest);
