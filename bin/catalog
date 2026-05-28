@@ -2,6 +2,7 @@
 set -eu
 
 IMAGE="exclusive-motors-au-catalog-cleanup:local"
+USER_RUN_DIR="${RUN_DIR:-}"
 RUN_DIR="${RUN_DIR:-catalog-runs/overnight}"
 KEEP="${KEEP:-10000}"
 SEED="${SEED:-exclusive-motors-au-2026-05-27}"
@@ -136,7 +137,7 @@ case "$cmd" in
       --confirm-delete "$CONFIRM"
     ;;
   fix-plan)
-    out="${1:-catalog-runs/fix-plan}"
+    out="${1:-${USER_RUN_DIR:-catalog-runs/fix-plan}}"
     run_node scripts/catalog-remediation.mjs run \
       --run-dir "/app/${out}" \
       --target-quantity "$TARGET_QUANTITY" \
@@ -144,7 +145,7 @@ case "$cmd" in
       --poll-seconds "$POLL_SECONDS"
     ;;
   fix-test)
-    out="${1:-catalog-runs/fix-test-40}"
+    out="${1:-${USER_RUN_DIR:-catalog-runs/fix-test-40}}"
     run_node scripts/catalog-remediation.mjs run \
       --run-dir "/app/${out}" \
       --apply-limit 40 \
@@ -154,7 +155,7 @@ case "$cmd" in
       --confirm-fix "$FIX_CONFIRM"
     ;;
   fix-all)
-    out="${1:-catalog-runs/fix-all}"
+    out="${1:-${USER_RUN_DIR:-catalog-runs/fix-all}}"
     run_node scripts/catalog-remediation.mjs run \
       --run-dir "/app/${out}" \
       --target-quantity "$TARGET_QUANTITY" \
