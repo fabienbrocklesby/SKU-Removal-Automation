@@ -47,7 +47,7 @@ export function buildInventoryPlan(products, { locationId, targetQuantity, runId
         skipped.push(inventorySkip(product, variant, inventoryItem, "inventory_not_tracked"));
         continue;
       }
-      const level = inventoryItem.inventoryLevels?.nodes?.find((entry) => entry.location?.id === locationId);
+      const level = inventoryLevelForLocation(inventoryItem, locationId);
       if (!level) {
         skipped.push(inventorySkip(product, variant, inventoryItem, "not_stocked_at_location"));
         continue;
@@ -111,4 +111,9 @@ function inventorySkip(product, variant, inventoryItem, reason) {
     inventoryItemId: inventoryItem?.id || "",
     reason
   };
+}
+
+function inventoryLevelForLocation(inventoryItem, locationId) {
+  if (inventoryItem.inventoryLevel?.location?.id === locationId) return inventoryItem.inventoryLevel;
+  return inventoryItem.inventoryLevels?.nodes?.find((entry) => entry.location?.id === locationId) || null;
 }

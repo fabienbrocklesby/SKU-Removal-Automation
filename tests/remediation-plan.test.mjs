@@ -141,6 +141,28 @@ test("buildInventoryPlan records untracked or unstocked variants without mutatin
   assert.equal(plan.skipped[0].reason, "inventory_not_tracked");
 });
 
+test("buildInventoryPlan accepts Shopify's singular inventoryLevel query shape", () => {
+  const singularShapeProduct = {
+    ...products[0],
+    variants: [{
+      ...products[0].variants[0],
+      inventoryItem: {
+        id: "gid://shopify/InventoryItem/99",
+        tracked: true,
+        inventoryLevel: {
+          location: { id: locationId },
+          quantities: [{ name: "available", quantity: 0 }]
+        }
+      }
+    }]
+  };
+
+  const plan = buildInventoryPlan([singularShapeProduct], { locationId, targetQuantity: 10, runId: "test-run" });
+
+  assert.equal(plan.changes.length, 1);
+  assert.equal(plan.skipped.length, 0);
+});
+
 test("assertBulkInputSize rejects inputs beyond Shopify's 100 MB limit", () => {
   assert.doesNotThrow(() => assertBulkInputSize(MAX_BULK_INPUT_BYTES));
   assert.throws(() => assertBulkInputSize(MAX_BULK_INPUT_BYTES + 1), /100 MB/);

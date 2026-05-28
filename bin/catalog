@@ -8,6 +8,9 @@ SEED="${SEED:-exclusive-motors-au-2026-05-27}"
 POLL_SECONDS="${POLL_SECONDS:-20}"
 EXPECTED_PRODUCTS="${EXPECTED_PRODUCTS:-326820}"
 CONFIRM="DELETE_EXCLUSIVE_MOTORS_AU_PRODUCTS"
+FIX_CONFIRM="FIX_EXCLUSIVE_MOTORS_AU_CATALOG"
+TARGET_QUANTITY="${TARGET_QUANTITY:-10}"
+LOCATION_ID="${LOCATION_ID:-}"
 
 usage() {
   cat <<EOF
@@ -23,6 +26,9 @@ Usage:
   bin/catalog dry-run-small [RUN_DIR]
   bin/catalog backup-full [RUN_DIR]
   bin/catalog resume-delete [RUN_DIR]
+  bin/catalog fix-plan [RUN_DIR]
+  bin/catalog fix-test [RUN_DIR]
+  bin/catalog fix-all [RUN_DIR]
   bin/catalog delete-test [RUN_DIR]
   bin/catalog delete-all [RUN_DIR]
   bin/catalog shell
@@ -33,6 +39,8 @@ Environment overrides:
   SEED=${SEED}
   POLL_SECONDS=${POLL_SECONDS}
   EXPECTED_PRODUCTS=${EXPECTED_PRODUCTS}
+  TARGET_QUANTITY=${TARGET_QUANTITY}
+  LOCATION_ID=${LOCATION_ID}
 EOF
 }
 
@@ -126,6 +134,33 @@ case "$cmd" in
       --expected-products "$EXPECTED_PRODUCTS" \
       --poll-seconds "$POLL_SECONDS" \
       --confirm-delete "$CONFIRM"
+    ;;
+  fix-plan)
+    out="${1:-catalog-runs/fix-plan}"
+    run_node scripts/catalog-remediation.mjs run \
+      --run-dir "/app/${out}" \
+      --target-quantity "$TARGET_QUANTITY" \
+      --location-id "$LOCATION_ID" \
+      --poll-seconds "$POLL_SECONDS"
+    ;;
+  fix-test)
+    out="${1:-catalog-runs/fix-test-40}"
+    run_node scripts/catalog-remediation.mjs run \
+      --run-dir "/app/${out}" \
+      --apply-limit 40 \
+      --target-quantity "$TARGET_QUANTITY" \
+      --location-id "$LOCATION_ID" \
+      --poll-seconds "$POLL_SECONDS" \
+      --confirm-fix "$FIX_CONFIRM"
+    ;;
+  fix-all)
+    out="${1:-catalog-runs/fix-all}"
+    run_node scripts/catalog-remediation.mjs run \
+      --run-dir "/app/${out}" \
+      --target-quantity "$TARGET_QUANTITY" \
+      --location-id "$LOCATION_ID" \
+      --poll-seconds "$POLL_SECONDS" \
+      --confirm-fix "$FIX_CONFIRM"
     ;;
   shell)
     compose run --rm --entrypoint sh catalog

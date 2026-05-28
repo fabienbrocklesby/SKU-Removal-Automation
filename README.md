@@ -58,6 +58,26 @@ Resume from an already-downloaded raw export after a processing interruption:
 RUN_DIR=catalog-runs/2026-05-27-overnight KEEP=10000 bin/catalog resume-delete
 ```
 
+Plan retained-catalog title and inventory remediation without applying it:
+
+```bash
+RUN_DIR=catalog-runs/fix-plan bin/catalog fix-plan
+```
+
+Apply the remediation to a 40-product live test. The test prioritizes products
+with clearly malformed separated title prefixes such as `/ Fuel Filter`, then
+fills with ordinary products if needed:
+
+```bash
+RUN_DIR=catalog-runs/fix-test-40 bin/catalog fix-test
+```
+
+Apply the remediation to the full retained catalog:
+
+```bash
+RUN_DIR=catalog-runs/fix-all bin/catalog fix-all
+```
+
 ## Output Files
 
 Each run writes a timestamped or named directory under `catalog-runs/`.
@@ -71,6 +91,14 @@ Each run writes a timestamped or named directory under `catalog-runs/`.
 - `delete-results.jsonl`: Shopify bulk deletion results.
 - `manifest.json`: counts, hashes, timestamps, API version, and operation state.
 
+Remediation runs also write:
+
+- `remediation-export.jsonl.gz`: pre-change product/variant inventory snapshot.
+- `title-changes.csv`: title before/after audit rows.
+- `title-mutation-input.jsonl` and `title-mutation-results.jsonl`.
+- `inventory-changes.csv`: inventory before/target audit rows.
+- `inventory-mutation-input.jsonl` and `inventory-mutation-results.jsonl`.
+
 ## VPS Notes
 
 Install Docker and the Compose plugin, clone this repo, create `.env`, then run:
@@ -83,6 +111,9 @@ bin/catalog dry-run-small
 bin/catalog delete-test
 RUN_DIR=catalog-runs/overnight KEEP=10000 EXPECTED_PRODUCTS=326820 bin/catalog backup-full
 RUN_DIR=catalog-runs/overnight KEEP=10000 bin/catalog delete-all
+RUN_DIR=catalog-runs/fix-plan bin/catalog fix-plan
+RUN_DIR=catalog-runs/fix-test-40 bin/catalog fix-test
+RUN_DIR=catalog-runs/fix-all bin/catalog fix-all
 ```
 
 The wrapper mounts `./catalog-runs` into the container, so backup files remain on the VPS filesystem.
